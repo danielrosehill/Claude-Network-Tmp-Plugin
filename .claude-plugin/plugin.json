@@ -1,0 +1,21 @@
+{
+  "name": "network-tmp",
+  "version": "0.1.0",
+  "description": "Overflow temp space on a home server or NAS for machines whose /tmp is a small tmpfs or whose disk is tight. A capped ext4 image exported over NFS, mounted on demand with a local-disk fallback, and wiped automatically after 24 h. Skills to set it up, to route large temporary files there, and to report and clean it.",
+  "author": {
+    "name": "Daniel Rosehill",
+    "url": "https://github.com/danielrosehill"
+  },
+  "repository": "https://github.com/danielrosehill/Claude-Network-Tmp-Plugin",
+  "license": "MIT",
+  "keywords": [
+    "tmp",
+    "tmpfs",
+    "nfs",
+    "storage",
+    "cleanup",
+    "homelab",
+    "tailscale",
+    "linux"
+  ]
+}

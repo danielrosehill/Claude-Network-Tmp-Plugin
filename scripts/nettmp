@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+# nettmp — overflow temp space on a network share, with a local-disk fallback.
+#
+#   nettmp path [--strict] [SUB]   print a writable dir (network if reachable,
+#                                  else local fallback); --strict fails instead
+#   nettmp mktemp [-d] [TEMPLATE]  mktemp inside that dir
+#   nettmp keep PATH...            move into keep/ (longer TTL)
+#   nettmp status [--json]         reachability, mount, usage, local /tmp
+#   nettmp clean [--dry-run] [--all | --older-than AGE]
+#                                  delete this host's overflow files now
+#                                  (AGE like 90m, 6h, 2d; default: TTL)
+#
+# Config: /etc/network-tmp.conf (written by client-setup.sh), overridden by
+# ~/.claude-plugins/network-tmp/config.env, overridden by NETTMP_* env vars.
+set -uo pipefail
+
+_env_snapshot="$(env | grep '^NETTMP_' || true)"
+[ -r /etc/network-tmp.conf ] && . /etc/network-tmp.conf
+USER_CONF="$HOME/.claude-plugins/network-tmp/config.env"
+[ -r "$USER_CONF" ] && . "$USER_CONF"
+while IFS= read -r kv; do [ -n "$kv" ] && export "$kv"; done <<<"$_env_snapshot"
+
+SERVER="${NETTMP_SERVER:-}"
+MOUNT="${NETTMP_MOUNT:-/mnt/nettmp}"
+FALLBACK="${NETTMP_FALLBACK:-/var/tmp/network-tmp}"
+TTL="${NETTMP_TTL:-24h}"
+HOST="$(hostname -s)"
+ME="$(id -un)"
+NET_DIR="$MOUNT/scratch/$HOST-$ME"
+KEEP_DIR="$MOUNT/keep/$HOST-$ME"
+LOCAL_DIR="$FALLBACK/$ME"
+
+die() { echo "nettmp: $*" >&2; exit 1; }
+note() { echo "nettmp: $*" >&2; }
+
+to_minutes() {
+  local v="$1" n="${1%[mhd]}"
+  [[ "$n" =~ ^[0-9]+$ ]] || die "bad age '$v' (use e.g. 90m, 6h, 2d)"
+  case "$v" in *d) echo $((n * 1440)) ;; *h) echo $((n * 60)) ;; *) echo "$n" ;; esac
+}
+
+# TCP probe first: touching an automount whose server is gone blocks for the
+# full mount timeout, the probe answers in <=2 s.
+reachable() {
+  [ -n "$SERVER" ] || return 1
+  timeout 2 bash -c "exec 3<>/dev/tcp/$SERVER/2049" 2>/dev/null
+}
+
+# Trigger the automount and make sure our subdir exists.
+net_ready() {
+  reachable || return 1
+  timeout 20 mkdir -p "$NET_DIR" 2>/dev/null && [ -w "$NET_DIR" ]
+}
+
+resolve_dir() {
+  local strict="$1"
+  if net_ready; then
+    echo "$NET_DIR"
+  elif [ "$strict" = 1 ]; then
+    die "network overflow unreachable (server ${SERVER:-unset})"
+  else
+    mkdir -p "$LOCAL_DIR" || die "cannot create fallback $LOCAL_DIR"
+    note "network unreachable, using local fallback $LOCAL_DIR"
+    echo "$LOCAL_DIR"
+  fi
+}
+
+cmd_path() {
+  local strict=0 sub=""
+  while [ $# -gt 0 ]; do
+    case "$1" in --strict) strict=1 ;; *) sub="$1" ;; esac; shift
+  done
+  local d; d="$(resolve_dir "$strict")" || exit 1
+  if [ -n "$sub" ]; then d="$d/$sub"; mkdir -p "$d" || exit 1; fi
+  echo "$d"
+}
+
+cmd_mktemp() {
+  local args=() tmpl="tmp.XXXXXXXX"
+  while [ $# -gt 0 ]; do
+    case "$1" in -d) args+=(-d) ;; *) tmpl="$1" ;; esac; shift
+  done
+  local d; d="$(resolve_dir 0)" || exit 1
+  mktemp "${args[@]}" -p "$d" "$tmpl"
+}
+
+cmd_keep() {
+  [ $# -gt 0 ] || die "keep: give at least one path"
+  net_ready || die "keep needs the network share (keep/ only exists there)"
+  mkdir -p "$KEEP_DIR"
+  local f
+  for f in "$@"; do
+    # Expiry is judged on mtime and mv preserves it: restart the clock.
+    find "$f" -exec touch -c {} + && mv -v -- "$f" "$KEEP_DIR/"
+  done
+}
+
+cmd_status() {
+  local json=0; [ "${1:-}" = --json ] && json=1
+  local reach=false mounted=false size="" used="" avail="" pct="" mine="" oldest=""
+  reachable && reach=true
+  if $reach && net_ready; then
+    mounted=true
+    read -r size used avail pct < <(df -h --output=size,used,avail,pcent "$MOUNT" | tail -1)
+    mine="$(du -sh "$NET_DIR" 2>/dev/null | cut -f1)"
+    local o; o="$(find "$NET_DIR" -type f -printf '%T@\n' 2>/dev/null | sort -n | head -1)"
+    [ -n "$o" ] && oldest="$(( ($(date +%s) - ${o%.*}) / 3600 ))h"
+  fi
+  local tmp_pct; tmp_pct="$(df --output=pcent /tmp | tail -1 | tr -d ' %')"
+  local loc; loc="$(du -sh "$LOCAL_DIR" 2>/dev/null | cut -f1)"
+  if [ "$json" = 1 ]; then
+    printf '{"server":"%s","reachable":%s,"mounted":%s,"mount":"%s","dir":"%s","share_size":"%s","share_used":"%s","share_avail":"%s","share_pct":"%s","mine":"%s","oldest_file_age":"%s","ttl":"%s","local_fallback":"%s","local_fallback_used":"%s","tmp_pct":%s}\n' \
+      "$SERVER" "$reach" "$mounted" "$MOUNT" "$NET_DIR" "$size" "$used" "$avail" "$pct" "${mine:-0}" "$oldest" "$TTL" "$LOCAL_DIR" "${loc:-0}" "${tmp_pct:-0}"
+  else
+    echo "server        ${SERVER:-unset}  reachable=$reach"
+    if $mounted; then
+      echo "share         $MOUNT  $used/$size used ($pct), $avail free"
+      echo "this host     $NET_DIR  ${mine:-0}${oldest:+, oldest file $oldest}"
+    fi
+    echo "auto-expiry   $TTL (scratch), keep/ longer"
+    echo "local fallbk  $LOCAL_DIR  ${loc:-0}"
+    echo "local /tmp    ${tmp_pct}% used"
+  fi
+}
+
+cmd_clean() {
+  local dry=0 all=0 age="$TTL"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run) dry=1 ;;
+      --all) all=1 ;;
+      --older-than) shift; age="${1:?--older-than needs a value}" ;;
+      *) die "clean: unknown option $1" ;;
+    esac; shift
+  done
+  local dirs=("$LOCAL_DIR"); net_ready && dirs+=("$NET_DIR")
+  local mins; mins="$(to_minutes "$age")"
+  local d
+  for d in "${dirs[@]}"; do
+    [ -d "$d" ] || continue
+    local sel=(-mindepth 1); [ "$all" = 1 ] || sel+=(-mmin "+$mins")
+    if [ "$dry" = 1 ]; then
+      local n s
+      n="$(find "$d" "${sel[@]}" -type f | wc -l)"
+      s="$(find "$d" "${sel[@]}" -type f -printf '%s\n' | awk '{t+=$1} END {printf "%.1fM", t/1048576}')"
+      echo "would delete $n files ($s) in $d"
+    else
+      find "$d" "${sel[@]}" -type f -delete
+      find "$d" -mindepth 1 -type d -empty -delete
+      echo "cleaned $d ($(du -sh "$d" | cut -f1) left)"
+    fi
+  done
+}
+
+case "${1:-}" in
+  path|where) shift; cmd_path "$@" ;;
+  mktemp) shift; cmd_mktemp "$@" ;;
+  keep) shift; cmd_keep "$@" ;;
+  status) shift; cmd_status "$@" ;;
+  clean) shift; cmd_clean "$@" ;;
+  ""|-h|--help|help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) die "unknown command '$1' (try: nettmp help)" ;;
+esac
