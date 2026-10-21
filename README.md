@@ -87,8 +87,8 @@ for how to resize.
   design.
 - **Not for sockets, locks, SQLite or mmap.** That's NFS's limit, not the
   plugin's. Claude Code's own temp dir (`CLAUDE_CODE_TMPDIR`) holds sockets, so
-  it should be moved to *local disk*, never onto this mount (see the `setup`
-  skill, step 5).
+  it should be moved to *local disk* (`/var/tmp`), never onto this mount
+  (see the `setup` skill, step 5).
 
 ## Tested
 

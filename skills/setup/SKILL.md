@@ -96,12 +96,16 @@ Tailscale ACL or missing `nfs-server` blocks it there.
 Claude Code keeps its per-session scratchpads under `$TMPDIR/claude-<uid>`. On
 a machine where `/tmp` is a tmpfs, that is RAM, and model weights or audio
 written to a scratchpad compete with memory. Claude Code honours
-`CLAUDE_CODE_TMPDIR`. Pointing it at **local disk** (for example
-`~/.cache/claude-tmp`, mode 0700) moves the scratchpads off RAM.
+`CLAUDE_CODE_TMPDIR` and creates its private `claude-<uid>/` (mode 0700) under
+it. Set it to **`/var/tmp`**: that's local disk, systemd clears it after 30
+days, and it's only 4 characters longer than `/tmp`. Add it to the `env` block
+of `~/.claude/settings.json`, which running sessions pick up immediately.
 
-Do **not** point it at the NFS mount. Claude Code puts sockets there, and they
-don't work over NFS. The path also has to stay short, because socket paths are
-capped at about 104 bytes.
+Don't use a long path like `~/.cache/claude-tmp`. Claude Code creates sockets
+under this directory, and socket paths are capped at about 104 bytes. With a
+long project name, `~/.cache/claude-tmp/claude-1000/<project-slug>/…` already
+reaches 102. Don't point it at the NFS mount either, because sockets don't
+work over NFS.
 
 This changes every future Claude Code session, so offer it rather than
 applying it.
