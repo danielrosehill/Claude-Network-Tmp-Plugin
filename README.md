@@ -78,6 +78,9 @@ for how to resize.
 - **Address the server by tailnet IP** where Tailscale exists, so the same
   mount works at home and away. Expect it to be slow over a long-haul link,
   which is why there's a fallback.
+- **Exclude the image from host backups.** `--one-file-system` skips the
+  mount, not the image file on `/`. Found on 2026-10-21: the first deployment's
+  nightly restic job would have read the whole 100 GB image.
 - **NFS `sec=sys`, mapped by uid.** The tree is owned by `NETTMP_OWNER`
   (default `1000:1000`), which must match the client user's uid. This is
   simple and fine for a single-user home setup. It is not a multi-tenant

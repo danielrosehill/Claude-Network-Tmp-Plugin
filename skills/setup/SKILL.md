@@ -56,6 +56,13 @@ It is idempotent. Re-running it rewrites the export list and the TTL and never
 reformats an existing image. To add a client, re-run it with the full,
 space-separated client list.
 
+**Exclude the image from the server's backups.** A file-level backup of `/`
+(restic, borg, rsync) skips the mount if it uses `--one-file-system`, but the
+image *file* is on `/` and gets read in full every run. Add
+`/var/lib/network-tmp` (or your `NETTMP_IMAGE` directory) to the backup's
+exclude list. Look for the backup job (`systemctl list-timers`, crontab) and
+check for this before reporting the setup as done.
+
 Then confirm three things: `df -h /srv/nettmp` shows the image's size,
 `exportfs -v` lists each client, and
 `systemctl list-timers network-tmp-clean.timer` shows a next run.
